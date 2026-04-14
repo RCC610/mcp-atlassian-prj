@@ -805,6 +805,7 @@ def _build_auth_provider() -> HardenedOAuthProxy | None:
         extra_authorize_params=(
             {"audience": "api.atlassian.com", "prompt": "consent"} if is_cloud else None
         ),
+        strip_resource_from_upstream=is_cloud,
         client_storage=build_oauth_client_storage_from_env(),
         require_authorization_consent=require_consent,
     )

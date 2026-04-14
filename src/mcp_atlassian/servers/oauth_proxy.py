@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
+from typing import Any
 
 from fastmcp.server.auth.oauth_proxy import OAuthProxy
 from mcp.server.auth.provider import OAuthClientInformationFull
@@ -34,11 +35,13 @@ class HardenedOAuthProxy(OAuthProxy):
         *,
         allowed_grant_types: list[str] | None = None,
         forced_scopes: list[str] | None = None,
+        strip_resource_from_upstream: bool = False,
         **kwargs: object,
     ) -> None:
         super().__init__(**kwargs)
         self._allowed_grant_types = _normalize_list(allowed_grant_types)
         self._forced_scopes = _normalize_list(forced_scopes)
+        self._strip_resource_from_upstream = strip_resource_from_upstream
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
         updates: dict[str, object] = {"response_types": ["code"]}
@@ -68,6 +71,30 @@ class HardenedOAuthProxy(OAuthProxy):
 
         client_info = client_info.model_copy(update=updates)
         await super().register_client(client_info)
+
+    def _build_upstream_authorize_url(
+        self, txn_id: str, transaction: dict[str, Any]
+    ) -> str:
+        """Build upstream authorize URL, stripping resource for Atlassian Cloud.
+
+        Atlassian Cloud does not support RFC 8707 resource indicators. When
+        an MCP client (e.g. Claude) sends a ``resource`` parameter, FastMCP
+        forwards it to the upstream ``/authorize`` endpoint. Atlassian binds
+        it into the auth code JWT, then rejects the token exchange with
+        ``invalid_target: Incorrect resource parameters``.
+
+        Stripping the parameter before the upstream redirect prevents this
+        while the proxy still tracks it internally for its own validation.
+        """
+        if self._strip_resource_from_upstream:
+            transaction = dict(transaction)
+            removed = transaction.pop("resource", None)
+            if removed:
+                logger.debug(
+                    "Stripped resource=%s from upstream authorize request",
+                    removed,
+                )
+        return super()._build_upstream_authorize_url(txn_id, transaction)
 
 
 __all__ = ["HardenedOAuthProxy", "parse_env_list"]
