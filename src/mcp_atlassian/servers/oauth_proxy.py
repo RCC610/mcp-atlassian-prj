@@ -75,25 +75,44 @@ class HardenedOAuthProxy(OAuthProxy):
     def _build_upstream_authorize_url(
         self, txn_id: str, transaction: dict[str, Any]
     ) -> str:
-        """Build upstream authorize URL, stripping resource for Atlassian Cloud.
+        """Build upstream authorize URL with Atlassian-specific adjustments.
 
-        Atlassian Cloud does not support RFC 8707 resource indicators. When
-        an MCP client (e.g. Claude) sends a ``resource`` parameter, FastMCP
-        forwards it to the upstream ``/authorize`` endpoint. Atlassian binds
-        it into the auth code JWT, then rejects the token exchange with
-        ``invalid_target: Incorrect resource parameters``.
+        Two fixes applied here:
 
-        Stripping the parameter before the upstream redirect prevents this
-        while the proxy still tracks it internally for its own validation.
+        1. **Strip resource**: Atlassian Cloud does not support RFC 8707
+           resource indicators. When an MCP client sends a ``resource``
+           parameter, FastMCP forwards it upstream. Atlassian binds it into
+           the auth code JWT, then rejects the token exchange with
+           ``invalid_target: Incorrect resource parameters``.
+
+        2. **Force scopes**: FastMCP uses the MCP client's requested scopes
+           for the upstream authorize URL (``transaction["scopes"]``). MCP
+           clients like Claude may only request a subset of scopes, missing
+           ones required by Atlassian APIs (e.g. ``read:me``,
+           ``read:jira-user``). We replace the transaction scopes with the
+           full set configured via ``forced_scopes`` so the upstream token
+           always carries every scope the server needs.
         """
+        transaction = dict(transaction)
+
         if self._strip_resource_from_upstream:
-            transaction = dict(transaction)
             removed = transaction.pop("resource", None)
             if removed:
                 logger.debug(
                     "Stripped resource=%s from upstream authorize request",
                     removed,
                 )
+
+        if self._forced_scopes:
+            original = transaction.get("scopes", [])
+            transaction["scopes"] = list(self._forced_scopes)
+            if set(original) != set(self._forced_scopes):
+                logger.debug(
+                    "Replaced upstream scopes %s with forced scopes %s",
+                    original,
+                    self._forced_scopes,
+                )
+
         return super()._build_upstream_authorize_url(txn_id, transaction)
 
 
