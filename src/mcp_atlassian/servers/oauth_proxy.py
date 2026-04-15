@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from fastmcp.server.auth.oauth_proxy import OAuthProxy
+from fastmcp.server.auth.redirect_validation import validate_redirect_uri
 from mcp.server.auth.provider import OAuthClientInformationFull
 
 logger = logging.getLogger("mcp-atlassian.server.oauth_proxy")
@@ -36,14 +37,36 @@ class HardenedOAuthProxy(OAuthProxy):
         allowed_grant_types: list[str] | None = None,
         forced_scopes: list[str] | None = None,
         strip_resource_from_upstream: bool = False,
+        allowed_client_redirect_uris: list[str] | None = None,
         **kwargs: object,
     ) -> None:
-        super().__init__(**kwargs)
+        super().__init__(
+            allowed_client_redirect_uris=allowed_client_redirect_uris, **kwargs
+        )
         self._allowed_grant_types = _normalize_list(allowed_grant_types)
         self._forced_scopes = _normalize_list(forced_scopes)
         self._strip_resource_from_upstream = strip_resource_from_upstream
+        self._allowed_redirect_uris = allowed_client_redirect_uris
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
+        # Reject clients whose redirect URIs don't match allowed patterns.
+        # FastMCP's base register_client accepts any URI and only validates
+        # later with a fallback that bypasses the restriction.
+        if self._allowed_redirect_uris is not None and client_info.redirect_uris:
+            for uri in client_info.redirect_uris:
+                if not validate_redirect_uri(
+                    redirect_uri=uri,
+                    allowed_patterns=self._allowed_redirect_uris,
+                ):
+                    logger.warning(
+                        "DCR rejected: redirect_uri %s not in allowed patterns %s",
+                        uri,
+                        self._allowed_redirect_uris,
+                    )
+                    raise ValueError(
+                        f"redirect_uri {uri} is not allowed by server policy"
+                    )
+
         updates: dict[str, object] = {"response_types": ["code"]}
 
         if self._allowed_grant_types is not None:
